@@ -73,14 +73,37 @@ psql -c "SELECT current_database(), current_user, now();"
 
 ## Step 4: Load schema and seed data
 
-Run the migration files in order:
+Run from the repo root (the folder that contains migrations/ and seed/), with the Step 3 variables exported.
+```bash
+for file in migrations/*.sql
+do
+    echo "Applying migration: $file"
 
-```bash
-```bash
-psql -v ON_ERROR_STOP=1 -f schema.sql
-psql -v ON_ERROR_STOP=1 -f seeds.sql
+    psql \
+        -h "$PGHOST" \
+        -p "$PGPORT" \
+        -U "$PGUSER" \
+        -d "$PGDATABASE" \
+        -v ON_ERROR_STOP=1 \
+        -f "$file" || exit 1
+done
+
+for file in seed/*.sql
+do
+    echo "Applying seed: $file"
+
+    psql \
+        -h "$PGHOST" \
+        -p "$PGPORT" \
+        -U "$PGUSER" \
+        -d "$PGDATABASE" \
+        -v ON_ERROR_STOP=1 \
+        -f "$file" || exit 1
+done
+
 psql -c "\dt"
 ```
+
 
 **Does the connection stay open on the RDS after these commands?**
 No. Each `psql` command opens its own connection, runs, and closes it when it finishes. The tables and data stay in the database permanently, but the connections do not.
