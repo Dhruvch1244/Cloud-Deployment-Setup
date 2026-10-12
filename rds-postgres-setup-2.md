@@ -113,8 +113,5 @@ No. Each `psql` command opens its own connection, runs, and closes it when it fi
 ## Step 5: Sample SELECT queries to check the tables
 
 ```bash
-psql -c "\dt"
-psql -c "\d <table-name>"
 psql -c "SELECT count(*) FROM <table-name>;"
-psql -c "SELECT * FROM <table-name> LIMIT 10;"
 ```
