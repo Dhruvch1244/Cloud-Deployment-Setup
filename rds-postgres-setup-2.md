@@ -73,9 +73,14 @@ psql -c "SELECT current_database(), current_user, now();"
 
 ## Step 4: Load schema and seed data
 
+Run the migration files in order:
+
 ```bash
-psql -v ON_ERROR_STOP=1 -f schema.sql
-psql -v ON_ERROR_STOP=1 -f seeds.sql
+cd /path/to/migrations
+for f in $(ls *.sql | sort -V); do
+  echo "Running $f"
+  psql -v ON_ERROR_STOP=1 -f "$f" || { echo "FAILED on $f"; break; }
+done
 psql -c "\dt"
 ```
 
