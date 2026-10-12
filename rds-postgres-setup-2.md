@@ -76,11 +76,9 @@ psql -c "SELECT current_database(), current_user, now();"
 Run the migration files in order:
 
 ```bash
-cd /path/to/migrations
-for f in $(ls *.sql | sort -V); do
-  echo "Running $f"
-  psql -v ON_ERROR_STOP=1 -f "$f" || { echo "FAILED on $f"; break; }
-done
+```bash
+psql -v ON_ERROR_STOP=1 -f schema.sql
+psql -v ON_ERROR_STOP=1 -f seeds.sql
 psql -c "\dt"
 ```
 
