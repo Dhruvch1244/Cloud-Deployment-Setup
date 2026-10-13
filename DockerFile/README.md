@@ -32,19 +32,53 @@ cd <your-frontend-folder>          && docker build -t frontend:latest .
 
 The steps below explain each of them.
 
-## 0. Before anything: Docker and Docker Compose on the Ubuntu VM
+## 0. Before anything: Docker, buildx and Docker Compose on the Ubuntu VM
 
-`docker compose` must be available on the VM before any command here works.
-Check first:
+Three things must be available on the VM before any command here works. Check:
 
 ```bash
 docker --version
+docker buildx version       # must print a version, 0.17 or newer
 docker compose version      # must print a version, 2.24 or newer
-docker buildx version       # 0.17 or newer
 ```
 
-If any of them says "command not found" or "is not a docker command", install
-Docker with its Compose and buildx plugins (Ubuntu, official Docker packages):
+### The most common problem: `requires BuildKit`
+
+If `docker build` prints this, **buildx is missing on your VM**:
+
+```
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+...
+the --mount option requires BuildKit.
+```
+
+Fix it with these commands. They add the buildx and Compose plugins for every
+user of the VM, whichever way Docker itself was installed:
+
+```bash
+ARCH=$(uname -m); case "$ARCH" in x86_64) BX=amd64; DC=x86_64 ;; aarch64|arm64) BX=arm64; DC=aarch64 ;; esac
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -fsSL "https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-$BX" -o /usr/local/lib/docker/cli-plugins/docker-buildx
+sudo curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-$DC" -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-compose
+
+docker buildx version
+docker compose version
+```
+
+Both must now print a version. Run your `docker build` again: the `DEPRECATED`
+line is gone and the build goes on.
+
+The same fix solves these two messages:
+
+- `docker: 'compose' is not a docker command`
+- `compose build requires buildx 0.17.0 or later`
+
+### Docker itself is not installed
+
+If `docker --version` says "command not found", install Docker from its
+official Ubuntu packages (this includes both plugins, so the fix above is not
+needed):
 
 ```bash
 sudo apt-get update
@@ -57,6 +91,8 @@ sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
+### `permission denied` on the Docker socket
+
 Let your user run Docker without `sudo`, then log out and in again (or run
 `newgrp docker`):
 
@@ -64,21 +100,18 @@ Let your user run Docker without `sudo`, then log out and in again (or run
 sudo usermod -aG docker $USER
 ```
 
-Check again; all three commands above must print a version, and this must work
-without `sudo`:
+### Final check
+
+All of these must work, without `sudo`:
 
 ```bash
 docker run --rm hello-world
+docker buildx version
+docker compose version
 ```
 
-Notes:
-
-- Without buildx, `docker build` falls back to the old builder and stops with
-  `the --mount option requires BuildKit`. `docker buildx version` must work.
-- The command is `docker compose` (with a space). The old `docker-compose`
-  (with a hyphen) is a different, outdated tool and is not used here.
-- If the VM already has Docker from Ubuntu's own `docker.io` package and
-  `docker compose version` fails, the install above adds the missing plugins.
+The command is `docker compose` (with a space). The old `docker-compose` (with
+a hyphen) is a different, outdated tool and is not used here.
 
 ## 1. Rename your existing Docker files
 
@@ -201,9 +234,9 @@ would delete the images it has just built.
 
 | What you see | Likely cause |
 |---|---|
-| `the --mount option requires BuildKit` or `DEPRECATED: The legacy builder is deprecated` during `docker build` | buildx is not installed on the VM. Do step 0; with Docker's own packages: `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`. Check with `docker buildx version` |
-| `docker: 'compose' is not a docker command` | The Compose plugin is not installed: step 0 |
-| `compose build requires buildx 0.17.0 or later` | buildx is too old: install Docker's own packages as in step 0 |
+| `the --mount option requires BuildKit` or `DEPRECATED: The legacy builder is deprecated` during `docker build` | buildx is not installed on the VM: run the fix in step 0 ("The most common problem"), then check with `docker buildx version` |
+| `docker: 'compose' is not a docker command` | The Compose plugin is not installed: same fix in step 0 |
+| `compose build requires buildx 0.17.0 or later` | buildx is too old: same fix in step 0 |
 | `required variable ... is missing a value` | That key is not in `.env` |
 | Build fails: folder or `package.json` / `pom.xml` not found | Wrong `*_DIR` in `.env`, often the letter case |
 | Container stays `unhealthy` but its log looks fine | Wrong `*_HEALTH_PATH`, or that URL needs a login; set it empty |

@@ -18,8 +18,8 @@ set -euo pipefail
 
 # Docker, the Compose plugin and buildx must be installed (README step 0).
 command -v docker >/dev/null 2>&1 || { echo "Docker is not installed. See step 0 of DockerFile/README.md." >&2; exit 1; }
-docker compose version >/dev/null 2>&1 || { echo "'docker compose' is not available. Install the Compose plugin: step 0 of DockerFile/README.md." >&2; exit 1; }
-docker buildx version >/dev/null 2>&1 || { echo "'docker buildx' is not available. Install the buildx plugin: step 0 of DockerFile/README.md." >&2; exit 1; }
+docker compose version >/dev/null 2>&1 || { echo "'docker compose' is not available. Run the fix in step 0 of DockerFile/README.md." >&2; exit 1; }
+docker buildx version >/dev/null 2>&1 || { echo "'docker buildx' is not available. Run the fix in step 0 of DockerFile/README.md." >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "Cannot talk to the Docker daemon. Is it running, and is your user in the docker group? (README step 0)" >&2; exit 1; }
 
 [ -f docker-compose.yml ] || { echo "Run this from your repository root (docker-compose.yml not found)." >&2; exit 1; }
