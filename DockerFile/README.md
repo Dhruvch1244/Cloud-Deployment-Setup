@@ -10,12 +10,30 @@ any of them: every setting comes from a `.env` file in your repository root.
 | `executor-service/Dockerfile` | Executor service (Spring Boot, Maven or Gradle wrapper) |
 | `frontend/Dockerfile` | Angular / React frontend, served by nginx |
 | `docker-compose.yml` | Starts everything; reads `.env` |
-| `run.sh` | Shortcuts: build one at a time, start, clean run |
+| `run.sh` | Clean run: prune images, build the four images, `docker compose up -d` |
 
 Image names are standard: `frontend`, `auth-service`, `order-service`,
 `executor-service`.
 
 Run every command from the root of **your** repository, on a branch.
+
+## The commands in short
+
+```bash
+# build each image on its own
+docker build -t auth-service:latest      <your-auth-service-folder>
+docker build -t order-service:latest     <your-order-service-folder>
+docker build -t executor-service:latest  <your-executor-service-folder>
+docker build -t frontend:latest          <your-frontend-folder>
+
+# start everything in the background
+docker compose up -d
+
+# clean run: prune images, build the four images, docker compose up -d
+./DockerFile/run.sh
+```
+
+The steps below explain each of them.
 
 ## 1. Rename your existing Docker files
 
@@ -64,21 +82,32 @@ docker build -t frontend:latest          <your-frontend-folder>
 docker images | grep -E "frontend|auth-service|order-service|executor-service"
 ```
 
-If your versions are not the defaults (Node 20, Java 21, frontend Node 22), add
-for example `--build-arg NODE_VERSION=22` or `--build-arg JAVA_VERSION=17`. The
+Defaults: Node 20 for the auth service, Java 21, Node 22 for the frontend. The
 build args are listed at the top of each Dockerfile.
+
+With other versions or ports, pass them as build args:
+
+```bash
+docker build -t auth-service:latest      --build-arg NODE_VERSION=22 --build-arg APP_PORT=3000  <your-auth-service-folder>
+docker build -t order-service:latest     --build-arg JAVA_VERSION=17 --build-arg APP_PORT=8081  <your-order-service-folder>
+docker build -t executor-service:latest  --build-arg JAVA_VERSION=17 --build-arg APP_PORT=8082  <your-executor-service-folder>
+docker build -t frontend:latest          --build-arg NODE_VERSION=22                            <your-frontend-folder>
+```
 
 A plain `docker build` knows nothing about your `.env`. If your project needs a
 setting from it to build (a frontend build script that reads env values or a
 folder outside the frontend, a Java service that depends on a library folder),
-the plain command fails where this one works, because it passes those settings:
+build that image through Compose, which passes the settings and gives the image
+the same name:
 
 ```bash
-./DockerFile/run.sh build
+docker compose build auth-service
+docker compose build order-service
+docker compose build executor-service
+docker compose build frontend
 ```
 
-It builds the same four images, with the same names, one at a time, and stops
-at the first failure. All four must build before you go on.
+All four must build before you go on.
 
 ## 5. Start everything with Compose
 
@@ -99,29 +128,36 @@ docker compose ps
 
 ## 6. Clean run, once everything works
 
-Stop, delete the images, build fresh, start. Use it before every real run so no
-old image is reused.
+One command. It prunes first, builds the four images, and finishes with
+`docker compose up -d`:
 
 ```bash
-./DockerFile/run.sh clean
+./DockerFile/run.sh
 ```
 
-which runs:
+What it runs, in order:
 
 ```bash
-docker compose down
-docker image prune -af
-docker compose up --build -d
+docker compose stop            # an image in use cannot be deleted
+docker image prune -af         # 1. PRUNE: delete all unused images
+docker compose build auth-service       # 2. BUILD: one image at a time
+docker compose build order-service
+docker compose build executor-service
+docker compose build frontend
+docker compose up -d           # 3. UP: always the last step
 ```
+
+Use it before every real run so no old image is reused. `./DockerFile/run.sh -y`
+skips the question.
 
 `docker image prune -af` deletes **every** image on the machine that no running
 container uses, including other projects' images and the Postgres and Kafka
 images (they are downloaded again). On a server shared with other teams, agree
 on it first.
 
-The prune is a command and not a step inside `docker-compose.yml` because
-Compose builds the images before it starts any container: a prune started by
-Compose would delete the images it has just built.
+The prune is in the script and not inside `docker-compose.yml` because Compose
+builds the images before it starts any container: a prune started by Compose
+would delete the images it has just built.
 
 ## If something fails
 

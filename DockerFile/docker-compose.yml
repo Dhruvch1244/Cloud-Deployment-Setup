@@ -77,10 +77,10 @@
 #    The list of build args is at the top of each Dockerfile.
 #
 #    A plain `docker build` does not read .env. If a build needs a setting from
-#    it (frontend build script, library folder ...), use this instead; it builds
-#    the same four images one at a time with the .env settings:
+#    it (frontend build script, library folder ...), build that image through
+#    Compose instead; same image name, with the .env settings:
 #
-#      ./DockerFile/run.sh build
+#      docker compose build frontend
 #
 #    All four must build before you go on.
 #
@@ -94,18 +94,17 @@
 #      docker compose up -d --build frontend   rebuild one service after a code change
 #      docker compose down                     stop (add -v to DELETE bundled DB/Kafka data)
 #
-# 6. CLEAN RUN, once everything works: stop, delete the images, build fresh.
-#    Use this before every real run so no old image is reused:
+# 6. CLEAN RUN, once everything works. One command; it prunes first, builds
+#    the four images one at a time, and ends with `docker compose up -d`:
 #
-#      docker compose down
-#      docker image prune -af
-#      docker compose up --build -d
+#      ./DockerFile/run.sh
 #
-#    `docker image prune -af` deletes EVERY image on the machine that no running
-#    container uses - also other projects' images and the Postgres/Kafka images,
-#    which are then downloaded again. It cannot be a step inside this file:
-#    Compose builds the images before it starts any container, so a prune
-#    started by Compose would delete the images it has just built.
+#    `docker image prune -af` (inside it) deletes EVERY image on the machine
+#    that no running container uses - also other projects' images and the
+#    Postgres/Kafka images, which are then downloaded again. The prune is in the
+#    script and not in this file because Compose builds the images before it
+#    starts any container: a prune started by Compose would delete the images
+#    it has just built.
 #
 # IMAGE NAMES are standard: frontend, auth-service, order-service,
 # executor-service (tag `latest`; set IMAGE_TAG in .env for another tag).
