@@ -21,10 +21,10 @@ Run every command from the root of **your** repository, on a branch.
 
 ```bash
 # build each image: go INTO the service folder, then build with a dot at the end
-cd <your-auth-service-folder>      && docker build -t auth-service:latest .      && cd -
-cd <your-order-service-folder>     && docker build -t order-service:latest .     && cd -
-cd <your-executor-service-folder>  && docker build -t executor-service:latest .  && cd -
-cd <your-frontend-folder>          && docker build -t frontend:latest .          && cd -
+cd <your-auth-service-folder>      && docker build -t auth-service:latest .      
+cd <your-order-service-folder>     && docker build -t order-service:latest .     
+cd <your-executor-service-folder>  && docker build -t executor-service:latest .  
+cd <your-frontend-folder>          && docker build -t frontend:latest .          
 
 # run everything: prune old images, build, and start in the background
 ./DockerFile/run.sh
