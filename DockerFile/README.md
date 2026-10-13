@@ -68,9 +68,17 @@ If your versions are not the defaults (Node 20, Java 21, frontend Node 22), add
 for example `--build-arg NODE_VERSION=22` or `--build-arg JAVA_VERSION=17`. The
 build args are listed at the top of each Dockerfile.
 
-The same thing with the settings taken from `.env`: `./DockerFile/run.sh build`
+A plain `docker build` knows nothing about your `.env`. If your project needs a
+setting from it to build (a frontend build script that reads env values or a
+folder outside the frontend, a Java service that depends on a library folder),
+the plain command fails where this one works, because it passes those settings:
 
-All four must build before you go on.
+```bash
+./DockerFile/run.sh build
+```
+
+It builds the same four images, with the same names, one at a time, and stops
+at the first failure. All four must build before you go on.
 
 ## 5. Start everything with Compose
 
