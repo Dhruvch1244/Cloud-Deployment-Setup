@@ -71,6 +71,13 @@
 #      docker compose up -d --build frontend   rebuild one service
 #      docker compose down                     stop (add -v to DELETE bundled DB/Kafka data)
 #
+# IMAGE NAMES are standard: frontend, auth-service, order-service,
+# executor-service (tag `latest`; set IMAGE_TAG in .env for another tag).
+# See them with:  docker images | grep -E "frontend|auth-service|order-service|executor-service"
+# Two different projects built on the SAME machine would overwrite each other's
+# images; in that case give one of them its own names in .env, e.g.
+# AUTH_SERVICE_IMAGE=teamx-auth-service.
+#
 # Other project layouts (a shared library folder, a parent pom, a shared Config
 # folder, a frontend with relative URLs) are one or two more .env keys: see the
 # comment block at the top of each Dockerfile and the ${...} names below.
@@ -303,6 +310,7 @@ services:
   #            every AUTH_SERVICE_ prefix, add the keys to .env.
   auth-service:
     profiles: [auth-service]
+    image: ${AUTH_SERVICE_IMAGE:-auth-service}:${IMAGE_TAG:-latest}
     build:
       context: ${AUTH_SERVICE_DIR:-./services/auth-service}
       dockerfile: ${AUTH_SERVICE_DOCKERFILE:-Dockerfile}
@@ -336,6 +344,7 @@ services:
   #            ORDER_SERVICE_ prefix, add the keys to .env.
   order-service:
     profiles: [order-service]
+    image: ${ORDER_SERVICE_IMAGE:-order-service}:${IMAGE_TAG:-latest}
     build:
       context: ${ORDER_SERVICE_DIR:-./services/order-service}
       dockerfile: ${ORDER_SERVICE_DOCKERFILE:-Dockerfile}
@@ -372,6 +381,7 @@ services:
   # <<CHANGE>> second worker: copy this block, rename EXECUTOR_SERVICE_.
   executor-service:
     profiles: [executor-service]
+    image: ${EXECUTOR_SERVICE_IMAGE:-executor-service}:${IMAGE_TAG:-latest}
     build:
       context: ${EXECUTOR_SERVICE_DIR:-./services/executor-service}
       dockerfile: ${EXECUTOR_SERVICE_DOCKERFILE:-Dockerfile}
@@ -408,6 +418,7 @@ services:
   # ================================================================ FRONTEND
   frontend:
     profiles: [frontend]
+    image: ${FRONTEND_IMAGE:-frontend}:${IMAGE_TAG:-latest}
     build:
       context: ${FRONTEND_DIR:-./frontend}
       dockerfile: ${FRONTEND_DOCKERFILE:-Dockerfile}
