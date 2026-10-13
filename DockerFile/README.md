@@ -32,6 +32,52 @@ cd <your-frontend-folder>          && docker build -t frontend:latest .
 
 The steps below explain each of them.
 
+## 0. Before anything: Docker and Docker Compose on the Ubuntu VM
+
+`docker compose` must be available on the VM before any command here works.
+Check first:
+
+```bash
+docker --version
+docker compose version      # must print a version, 2.24 or newer
+docker buildx version       # 0.17 or newer
+```
+
+If any of them says "command not found" or "is not a docker command", install
+Docker with its Compose and buildx plugins (Ubuntu, official Docker packages):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Let your user run Docker without `sudo`, then log out and in again (or run
+`newgrp docker`):
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Check again; all three commands above must print a version, and this must work
+without `sudo`:
+
+```bash
+docker run --rm hello-world
+```
+
+Notes:
+
+- The command is `docker compose` (with a space). The old `docker-compose`
+  (with a hyphen) is a different, outdated tool and is not used here.
+- If the VM already has Docker from Ubuntu's own `docker.io` package and
+  `docker compose version` fails, the install above adds the missing plugins.
+
 ## 1. Rename your existing Docker files
 
 Nothing is deleted; your files become `*.999`. To go back, remove the suffix.
