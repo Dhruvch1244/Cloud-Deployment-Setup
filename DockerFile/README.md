@@ -73,6 +73,8 @@ docker run --rm hello-world
 
 Notes:
 
+- Without buildx, `docker build` falls back to the old builder and stops with
+  `the --mount option requires BuildKit`. `docker buildx version` must work.
 - The command is `docker compose` (with a space). The old `docker-compose`
   (with a hyphen) is a different, outdated tool and is not used here.
 - If the VM already has Docker from Ubuntu's own `docker.io` package and
@@ -199,6 +201,9 @@ would delete the images it has just built.
 
 | What you see | Likely cause |
 |---|---|
+| `the --mount option requires BuildKit` or `DEPRECATED: The legacy builder is deprecated` during `docker build` | buildx is not installed on the VM. Do step 0; with Docker's own packages: `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`. Check with `docker buildx version` |
+| `docker: 'compose' is not a docker command` | The Compose plugin is not installed: step 0 |
+| `compose build requires buildx 0.17.0 or later` | buildx is too old: install Docker's own packages as in step 0 |
 | `required variable ... is missing a value` | That key is not in `.env` |
 | Build fails: folder or `package.json` / `pom.xml` not found | Wrong `*_DIR` in `.env`, often the letter case |
 | Container stays `unhealthy` but its log looks fine | Wrong `*_HEALTH_PATH`, or that URL needs a login; set it empty |
