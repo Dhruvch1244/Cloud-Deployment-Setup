@@ -1,0 +1,414 @@
+# ==============================================================================
+# DOCKER COMPOSE TEMPLATE  -  frontend + Node API + Java API + Java worker
+#                             + (optional) Postgres, Kafka, mail catcher.
+#
+# WHERE TO CHANGE
+#   99% of projects:  ONLY .env  (see the checklist in docker-template/README.md).
+#   This file needs an edit only at the lines tagged  "# <<CHANGE>>" :
+#     - you have MORE services than one Node API / one Java API / one Java worker
+#       (copy a whole service block and rename its *_ prefix), or
+#     - a service must wait for another one that is not already listed.
+#   Find every such spot with:   grep -n "<<CHANGE>>" docker-compose.yml
+#
+# WHAT RUNS is chosen in .env with COMPOSE_PROFILES - no block has to be deleted:
+#   app:    frontend  node-api  java-api  java-worker
+#   infra:  localdb   kafka     mail      kafka-ui   mock-market   redis
+#   tools:  seed (one-shot database load, see db-seed below)
+#   Database on RDS = leave `localdb` out and set DB_HOST.
+#
+# Service names (node-api, java-api, java-worker, postgres, kafka, mailpit) are
+# also the HOSTNAMES containers use to reach each other, e.g. http://java-api:8081.
+#
+# Needs Docker Compose v2.24+ and buildx 0.17+  (run ./docker-template/check.sh).
+# ==============================================================================
+
+x-logging: &logging              # keeps the disk from filling with logs
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-restart: &restart
+  restart: unless-stopped
+  logging: *logging
+
+# One health check for every app container:
+#   HC_PATH set   -> HTTP GET http://127.0.0.1:<HC_PORT><HC_PATH> must answer 2xx
+#   HC_PATH empty -> "the port is open" is enough (no public health URL)
+#   HC_PATH=process -> "the process is running" (a worker with no web server at all)
+x-healthcheck: &healthcheck
+  test:
+    - CMD-SHELL
+    - if [ "$$HC_PATH" = process ]; then kill -0 1; elif [ -n "$$HC_PATH" ]; then wget -qO /dev/null "http://127.0.0.1:$$HC_PORT$$HC_PATH"; else nc -z 127.0.0.1 "$$HC_PORT"; fi
+  interval: 15s
+  timeout: 5s
+  retries: 10
+  start_period: 60s
+
+# ------------------------------------------------------------------------------
+# The same value under every name a framework commonly reads, so the application
+# code does not have to change. A name your app reads that is NOT listed here goes
+# into the "APP-SPECIFIC" section of .env (it reaches the containers via env_file).
+# ------------------------------------------------------------------------------
+x-common-env: &common-env
+  # --- database (change the connection in ONE place: DB_* in .env)
+  DB_HOST: ${DB_HOST:?set DB_HOST in .env (postgres for the bundled DB, or the RDS endpoint)}
+  DB_PORT: ${DB_PORT:-5432}
+  DB_NAME: ${DB_NAME:?set DB_NAME in .env}
+  DB_USER: ${DB_USER:?set DB_USER in .env}
+  DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+  PGHOST: ${DB_HOST}
+  PGPORT: ${DB_PORT:-5432}
+  PGDATABASE: ${DB_NAME}
+  PGUSER: ${DB_USER}
+  PGPASSWORD: ${DB_PASSWORD}
+  POSTGRES_HOST: ${DB_HOST}
+  POSTGRES_PORT: ${DB_PORT:-5432}
+  POSTGRES_DB: ${DB_NAME}
+  POSTGRES_USER: ${DB_USER}
+  POSTGRES_PASSWORD: ${DB_PASSWORD}
+  # --- kafka
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL:-kafka:29092}
+  KAFKA_BROKERS: ${KAFKA_INTERNAL:-kafka:29092}
+  # --- browser origin allowed to call the APIs (CORS)
+  CORS_ORIGINS: &cors ${CORS_ORIGINS:-${PUBLIC_SCHEME:-http}://${PUBLIC_HOST:-localhost}:${FRONTEND_PORT:-4200}}
+  CORS_ALLOWED_ORIGINS: *cors
+  FRONTEND_URL: *cors
+
+x-java-env: &java-env
+  <<: *common-env
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://${DB_HOST}:${DB_PORT:-5432}/${DB_NAME}${JDBC_PARAMS:-}"
+  SPRING_DATASOURCE_USERNAME: ${DB_USER}
+  SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL:-kafka:29092}
+
+# A shared config folder of the repo (e.g. ./Config with application.yml), mounted
+# read-only into every app container. Default = an empty folder.
+x-config-volume: &config-volume ${APP_CONFIG_DIR:-./docker-template/empty}:${APP_CONFIG_MOUNT:-/config}:ro
+
+# `required: false` = skip the wait when that profile is switched off
+# (database on RDS / no Kafka).
+x-wait-db: &wait-db
+  postgres: { condition: service_healthy, required: false }
+
+x-wait-db-kafka: &wait-db-kafka
+  postgres: { condition: service_healthy, required: false }
+  kafka-init: { condition: service_completed_successfully, required: false }
+
+services:
+  # ============================================================ INFRASTRUCTURE
+  postgres:
+    profiles: [localdb]
+    image: postgres:${POSTGRES_VERSION:-16}
+    <<: *restart
+    # Accepts SSL and plain connections, like RDS: an app that insists on SSL (often
+    # switched on by NODE_ENV=production) works against the bundled database too.
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem", "-c", "ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key"]
+    environment:
+      POSTGRES_DB: ${DB_NAME:?set DB_NAME in .env}
+      POSTGRES_USER: ${DB_USER:?set DB_USER in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # *.sql / *.sh in this folder run ONCE, on an empty volume, in name order.
+      # Default = an empty folder (the app migrates itself: Liquibase/Flyway/...).
+      - ${DB_INIT_DIR:-./docker-template/empty}:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: loads schema and seed data into the database named by DB_* (the
+  # bundled Postgres or RDS). Runs the team's own command (DB_SEED_COMMAND) inside
+  # a copy of DB_SEED_DIR, with psql and the PG* variables ready.
+  #   docker compose --profile seed run --rm db-seed
+  db-seed:
+    profiles: [seed]
+    image: postgres:${POSTGRES_VERSION:-16}
+    restart: "no"
+    logging: *logging
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      <<: *common-env
+      TARGET_DATABASE: ${DB_NAME}
+      TARGET_DB: ${DB_NAME}
+      DATABASE: ${DB_NAME}
+      DATABASE_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT:-5432}/${DB_NAME}"
+      SEED_COMMAND: ${DB_SEED_COMMAND:-for f in $$(ls *.sql | sort); do echo "== $$f"; psql -v ON_ERROR_STOP=1 -q -f "$$f" || exit 1; done}
+    volumes:
+      - ${DB_SEED_DIR:-./docker-template/empty}:/seed-src:ro
+    depends_on: *wait-db
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        rm -rf /work && cp -a /seed-src /work && cd /work
+        find . -name '*.sh' -exec sed -i 's/\r$$//' {} + -exec chmod +x {} +
+        # a script that reads a .env file next to it gets the connection values
+        [ -f .env ] || env | grep -E '^(DB_|POSTGRES_|PG|DATABASE_|TARGET_)' > .env
+        echo "seeding $$PGDATABASE on $$PGHOST from $$(pwd)"
+        bash -c "$$SEED_COMMAND"
+        echo "seed finished"
+
+  # Single-node KRaft broker. Containers use kafka:29092.
+  kafka:
+    profiles: [kafka]
+    image: apache/kafka:${KAFKA_VERSION:-3.8.0}
+    <<: *restart
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:29093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_HOST_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "${KAFKA_AUTO_CREATE_TOPICS:-false}"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx768m"
+    ports:
+      - "127.0.0.1:${KAFKA_HOST_PORT:-9092}:9092"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:29092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # Creates the topics listed in .env KAFKA_TOPICS, then exits.
+  kafka-init:
+    profiles: [kafka]
+    image: apache/kafka:${KAFKA_VERSION:-3.8.0}
+    depends_on:
+      kafka: { condition: service_healthy }
+    environment:
+      KAFKA_TOPICS: ${KAFKA_TOPICS:-}
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -eu
+        BS=kafka:29092
+        export PATH=/opt/kafka/bin:$$PATH
+        until kafka-topics.sh --bootstrap-server $$BS --list >/dev/null 2>&1; do echo "waiting for Kafka"; sleep 5; done
+        for t in $$KAFKA_TOPICS; do          # name:partitions:retention_ms
+          IFS=: read -r name parts retention <<< "$$t"
+          kafka-topics.sh --bootstrap-server $$BS --create --if-not-exists --topic "$$name" \
+            --partitions "$${parts:-1}" --replication-factor 1 \
+            --config retention.ms="$${retention:-604800000}" --config cleanup.policy=delete
+        done
+        kafka-topics.sh --bootstrap-server $$BS --list
+    restart: "no"
+    logging: *logging
+
+  # Optional Redis for applications that need one:  REDIS_URL=redis://redis:6379
+  redis:
+    profiles: [redis]
+    image: redis:7-alpine
+    <<: *restart
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Catches outgoing mail (SMTP mailpit:1025). Inbox UI on the box only.
+  mailpit:
+    profiles: [mail]
+    image: axllent/mailpit:latest
+    <<: *restart
+    ports:
+      - "127.0.0.1:${MAIL_UI_PORT:-8025}:8025"
+
+  # Stand-in for the Fauxnance market-data API: same paths and shapes, made-up
+  # prices, any key accepted. For testing trades without a real key or quota.
+  # Point the app at it:  FAUXNANCE_BASE_URL=http://market-mock:8089/v1
+  market-mock:
+    profiles: [mock-market]
+    image: node:20-alpine
+    <<: *restart
+    command: ["node", "/mock/fauxnance-mock.js"]
+    environment:
+      PORT: 8089
+      MOCK_MARKET_STATE: ${MOCK_MARKET_STATE:-open}
+    volumes:
+      - ./docker-template/mock:/mock:ro
+    ports:
+      - "127.0.0.1:${MOCK_MARKET_HOST_PORT:-8089}:8089"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8089/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Topic/message browser. Has no login: published on the box only by default.
+  kafka-ui:
+    profiles: [kafka-ui]
+    image: provectuslabs/kafka-ui:latest
+    <<: *restart
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    ports:
+      - "${KAFKA_UI_BIND:-127.0.0.1}:${KAFKA_UI_PORT:-8888}:8080"
+    depends_on:
+      - kafka
+
+  # =============================================================== NODE API
+  # <<CHANGE>> second Node service: copy this block, rename the service and
+  #            every NODE_API_ prefix (e.g. NODE2_), add the keys to .env.
+  node-api:
+    profiles: [node-api]
+    build:
+      context: ${NODE_API_DIR:-./services/node-api}
+      dockerfile: ${NODE_API_DOCKERFILE:-Dockerfile}
+      additional_contexts:
+        extra: ${NODE_API_EXTRA_DIR:-./docker-template/empty}
+      args:
+        NODE_VERSION: ${NODE_API_NODE_VERSION:-20}
+        NEEDS_BUILD: ${NODE_API_NEEDS_BUILD:-true}
+        BUILD_SCRIPT: ${NODE_API_BUILD_SCRIPT:-build}
+        START_CMD: ${NODE_API_START_CMD:-auto}
+        APP_PORT: ${NODE_API_PORT:-3000}
+        WRITABLE_DIRS: ${NODE_API_WRITABLE_DIRS:-}
+        NATIVE_BUILD_DEPS: ${NODE_API_NATIVE_DEPS:-false}
+        EXTRA_DEST: ${NODE_API_EXTRA_DEST:-}
+    <<: *restart
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      <<: *common-env
+      PORT: ${NODE_API_PORT:-3000}
+      HC_PORT: ${NODE_API_PORT:-3000}
+      HC_PATH: ${NODE_API_HEALTH_PATH:-}
+    volumes:
+      - *config-volume
+    ports:
+      - "${NODE_API_HOST_PORT:-${NODE_API_PORT:-3000}}:${NODE_API_PORT:-3000}"
+    depends_on: *wait-db          # <<CHANGE>> only if it must wait for another service
+    healthcheck: *healthcheck
+
+  # =============================================================== JAVA API
+  # <<CHANGE>> second Java API: copy this block, rename the service and every
+  #            JAVA_API_ prefix, add the keys to .env.
+  java-api:
+    profiles: [java-api]
+    build:
+      context: ${JAVA_API_DIR:-./services/java-api}
+      dockerfile: ${JAVA_API_DOCKERFILE:-Dockerfile}
+      additional_contexts:
+        extra: ${JAVA_API_EXTRA_DIR:-./docker-template/empty}
+      args:
+        JAVA_VERSION: ${JAVA_API_JAVA_VERSION:-21}
+        MAVEN_VERSION: ${MAVEN_VERSION:-3.9.9}
+        APP_PORT: ${JAVA_API_PORT:-8081}
+        APP_DIR: ${JAVA_API_APP_DIR:-.}
+        PRE_INSTALL_DIRS: ${JAVA_API_PRE_INSTALL_DIRS:-}
+        MODULE: ${JAVA_API_MODULE:-}
+        EXTRA_DEST: ${JAVA_API_EXTRA_DEST:-}
+        RUNTIME_IMAGE: ${JAVA_API_RUNTIME_IMAGE:-eclipse-temurin:${JAVA_API_JAVA_VERSION:-21}-jre-alpine}
+        RUNTIME_APK: ${JAVA_API_RUNTIME_APK:-}
+    <<: *restart
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      <<: *java-env
+      SERVER_PORT: ${JAVA_API_PORT:-8081}          # beats server.port in application.yml
+      PORT: ${JAVA_API_PORT:-8081}
+      HC_PORT: ${JAVA_API_PORT:-8081}
+      HC_PATH: ${JAVA_API_HEALTH_PATH:-}
+      JAVA_OPTS: "${JAVA_OPTS:--XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError}"
+    volumes:
+      - *config-volume
+    ports:
+      - "${JAVA_API_HOST_PORT:-${JAVA_API_PORT:-8081}}:${JAVA_API_PORT:-8081}"
+    depends_on: *wait-db-kafka    # <<CHANGE>> only if it must wait for another service
+    healthcheck: *healthcheck
+
+  # ============================================================ JAVA WORKER
+  # Background service (Kafka consumer, scheduler ...). Not published to the host.
+  # <<CHANGE>> second worker: copy this block, rename JAVA_WORKER_.
+  java-worker:
+    profiles: [java-worker]
+    build:
+      context: ${JAVA_WORKER_DIR:-./services/java-worker}
+      dockerfile: ${JAVA_WORKER_DOCKERFILE:-Dockerfile}
+      additional_contexts:
+        extra: ${JAVA_WORKER_EXTRA_DIR:-./docker-template/empty}
+      args:
+        JAVA_VERSION: ${JAVA_WORKER_JAVA_VERSION:-21}
+        MAVEN_VERSION: ${MAVEN_VERSION:-3.9.9}
+        APP_PORT: ${JAVA_WORKER_PORT:-8082}
+        APP_DIR: ${JAVA_WORKER_APP_DIR:-.}
+        PRE_INSTALL_DIRS: ${JAVA_WORKER_PRE_INSTALL_DIRS:-}
+        MODULE: ${JAVA_WORKER_MODULE:-}
+        EXTRA_DEST: ${JAVA_WORKER_EXTRA_DEST:-}
+        RUNTIME_IMAGE: ${JAVA_WORKER_RUNTIME_IMAGE:-eclipse-temurin:${JAVA_WORKER_JAVA_VERSION:-21}-jre-alpine}
+        RUNTIME_APK: ${JAVA_WORKER_RUNTIME_APK:-}
+    <<: *restart
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      <<: *java-env
+      SERVER_PORT: ${JAVA_WORKER_PORT:-8082}
+      PORT: ${JAVA_WORKER_PORT:-8082}
+      HC_PORT: ${JAVA_WORKER_PORT:-8082}
+      HC_PATH: ${JAVA_WORKER_HEALTH_PATH:-}
+      JAVA_OPTS: "${JAVA_OPTS:--XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError}"
+    volumes:
+      - *config-volume
+    depends_on:
+      <<: *wait-db-kafka
+      # Waits for the Java API to be healthy = the API has migrated the database.
+      # <<CHANGE>> remove the java-api line below if the worker does not depend on the API.
+      java-api: { condition: service_healthy, required: false }
+    healthcheck: *healthcheck
+
+  # ================================================================ FRONTEND
+  frontend:
+    profiles: [frontend]
+    build:
+      context: ${FRONTEND_DIR:-./frontend}
+      dockerfile: ${FRONTEND_DOCKERFILE:-Dockerfile}
+      additional_contexts:
+        extra: ${FRONTEND_EXTRA_DIR:-./docker-template/empty}
+      args:
+        NODE_VERSION: ${FRONTEND_NODE_VERSION:-22}
+        BUILD_SCRIPT: ${FRONTEND_BUILD_SCRIPT:-build}
+        DIST_DIR: ${FRONTEND_DIST_DIR:-}
+        BUILD_ENV: ${FRONTEND_BUILD_ENV:-}
+        BUILD_APK: ${FRONTEND_BUILD_APK:-}
+        BUILD_ARGS: ${FRONTEND_BUILD_ARGS:-}
+        PRE_BUILD_CMD: ${FRONTEND_PRE_BUILD_CMD:-}
+        EXTRA_DEST: ${FRONTEND_EXTRA_DEST:-}
+    <<: *restart
+    environment:
+      # Addresses baked into the page -> where they really are (README step 5).
+      URL_REWRITES: ${FRONTEND_URL_REWRITES:-}
+      # What nginx forwards to the backends. `__unused__` = route switched off.
+      FRONTEND_PROXY_NODE_PREFIX: ${FRONTEND_PROXY_NODE_PREFIX:-_node}
+      FRONTEND_PROXY_NODE_TARGET: ${FRONTEND_PROXY_NODE_TARGET:-http://node-api:${NODE_API_PORT:-3000}}
+      FRONTEND_PROXY_JAVA_PREFIX: ${FRONTEND_PROXY_JAVA_PREFIX:-_java}
+      FRONTEND_PROXY_JAVA_TARGET: ${FRONTEND_PROXY_JAVA_TARGET:-http://java-api:${JAVA_API_PORT:-8081}}
+      FRONTEND_PROXY_KEEP_PATHS: ${FRONTEND_PROXY_KEEP_PATHS:-__unused__}
+      FRONTEND_PROXY_KEEP_TARGET: ${FRONTEND_PROXY_KEEP_TARGET:-http://java-api:${JAVA_API_PORT:-8081}}
+      FRONTEND_PROXY_KEEP2_PATHS: ${FRONTEND_PROXY_KEEP2_PATHS:-__unused2__}
+      FRONTEND_PROXY_KEEP2_TARGET: ${FRONTEND_PROXY_KEEP2_TARGET:-http://node-api:${NODE_API_PORT:-3000}}
+      NGINX_ENVSUBST_FILTER: "^FRONTEND_PROXY_"
+    volumes:
+      - ${FRONTEND_NGINX_TEMPLATE:-./docker-template/nginx/default.conf.template}:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "${FRONTEND_PORT:-4200}:80"
+    depends_on:
+      node-api: { condition: service_started, required: false }
+      java-api: { condition: service_started, required: false }
+
+volumes:
+  pgdata:
+  kafkadata:
