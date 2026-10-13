@@ -1,25 +1,81 @@
 # ==============================================================================
-# DOCKER COMPOSE TEMPLATE  -  frontend + Node API + Java API + Java worker
-#                             + (optional) Postgres, Kafka, mail catcher.
+# GENERIC DOCKER COMPOSE  -  frontend + auth-service + order-service + executor-service
+#                            (+ optional Postgres, Kafka, mail catcher, Redis)
 #
-# WHERE TO CHANGE
-#   99% of projects:  ONLY .env  (see the checklist in docker-template/README.md).
-#   This file needs an edit only at the lines tagged  "# <<CHANGE>>" :
-#     - you have MORE services than one Node API / one Java API / one Java worker
-#       (copy a whole service block and rename its *_ prefix), or
-#     - a service must wait for another one that is not already listed.
-#   Find every such spot with:   grep -n "<<CHANGE>>" docker-compose.yml
+# This folder holds 4 Dockerfiles and this file. You edit NONE of them:
+# every setting is read from a file named .env in your repository root.
 #
-# WHAT RUNS is chosen in .env with COMPOSE_PROFILES - no block has to be deleted:
-#   app:    frontend  node-api  java-api  java-worker
-#   infra:  localdb   kafka     mail      kafka-ui   mock-market   redis
-#   tools:  seed (one-shot database load, see db-seed below)
-#   Database on RDS = leave `localdb` out and set DB_HOST.
+#   DockerFile/auth-service/Dockerfile       any npm / NestJS service
+#   DockerFile/order-service/Dockerfile      Spring Boot (Maven or Gradle wrapper)
+#   DockerFile/executor-service/Dockerfile   Spring Boot (Maven or Gradle wrapper)
+#   DockerFile/frontend/Dockerfile           Angular / React, served by nginx
+#   DockerFile/docker-compose.yml            this file
 #
-# Service names (node-api, java-api, java-worker, postgres, kafka, mailpit) are
-# also the HOSTNAMES containers use to reach each other, e.g. http://java-api:8081.
+# ------------------------------------------------------------------ HOW TO USE
+# Run everything from the root of YOUR repository, on a branch.
 #
-# Needs Docker Compose v2.24+ and buildx 0.17+  (run ./docker-template/check.sh).
+# 1. Rename your existing Docker files to *.999 (nothing is deleted; to go back,
+#    remove the .999 suffix):
+#
+#      find . \( -name node_modules -o -name .git -o -name DockerFile -o -name target -o -name dist \) -prune -o \
+#        -type f \( -iname 'Dockerfile*' -o -name '.dockerignore' -o -iname '*compose*.yml' -o -iname '*compose*.yaml' \) \
+#        ! -name '*.999' -exec mv -n {} {}.999 \;
+#
+# 2. Copy this folder into your repository root (it must be named DockerFile and
+#    stay there), then copy the files into place. <...> = your folder names,
+#    spelled exactly as on disk:
+#
+#      cp DockerFile/docker-compose.yml .
+#      cp DockerFile/auth-service/Dockerfile      <your-auth-service-folder>/Dockerfile
+#      cp DockerFile/order-service/Dockerfile     <your-order-service-folder>/Dockerfile
+#      cp DockerFile/executor-service/Dockerfile  <your-executor-service-folder>/Dockerfile
+#      cp DockerFile/frontend/Dockerfile          <your-frontend-folder>/Dockerfile
+#
+# 3. Create .env in your repository root (never commit it). Minimum content:
+#
+#      COMPOSE_PROJECT_NAME=myteam
+#      COMPOSE_PROFILES=frontend,auth-service,order-service,executor-service,kafka
+#      PUBLIC_HOST=<address typed in the browser: server IP / DNS, or localhost>
+#      DB_HOST=<RDS endpoint>          (bundled Postgres: add localdb to COMPOSE_PROFILES, DB_HOST=postgres)
+#      DB_NAME=...
+#      DB_USER=...
+#      DB_PASSWORD=...
+#      JWT_SECRET=<same for all services, 32+ characters>
+#      AUTH_SERVICE_DIR=./services/auth-service
+#      AUTH_SERVICE_PORT=3000
+#      ORDER_SERVICE_DIR=./services/order-service
+#      ORDER_SERVICE_PORT=8081
+#      ORDER_SERVICE_HEALTH_PATH=/actuator/health
+#      EXECUTOR_SERVICE_DIR=./services/executor-service
+#      EXECUTOR_SERVICE_PORT=8082
+#      FRONTEND_DIR=./frontend
+#      FRONTEND_PORT=4200
+#      FRONTEND_URL_REWRITES=http://localhost:3000=http://<PUBLIC_HOST>:4200/_auth http://localhost:8081=http://<PUBLIC_HOST>:4200/_order
+#      KAFKA_TOPICS=orders:3:604800000 orders.DLT:3:604800000
+#      ...then every other name YOUR code reads (the keys of your own .env.example).
+#
+#    Already given to every service, do not repeat: DB_*, PG*, POSTGRES_*,
+#    SPRING_DATASOURCE_*, KAFKA_BOOTSTRAP_SERVERS, CORS_ORIGINS, PORT, SERVER_PORT.
+#    One service reaches another by SERVICE NAME, never localhost:
+#      http://auth-service:3000   http://order-service:8081   kafka:29092   postgres:5432
+#    FRONTEND_URL_REWRITES: each address written in the frontend code (left) is
+#    replaced at start (right); /_auth goes to auth-service, /_order to
+#    order-service, through the frontend port. Only that port has to be open.
+#
+# 4. Start and look:
+#
+#      docker compose up --build -d            build everything and start
+#      docker compose ps                       what runs, and is it healthy
+#      docker compose logs -f order-service    follow one service
+#      docker compose up -d order-service      apply a change in .env
+#      docker compose up -d --build frontend   rebuild one service
+#      docker compose down                     stop (add -v to DELETE bundled DB/Kafka data)
+#
+# Other project layouts (a shared library folder, a parent pom, a shared Config
+# folder, a frontend with relative URLs) are one or two more .env keys: see the
+# comment block at the top of each Dockerfile and the ${...} names below.
+#
+# Needs Docker Compose v2.24+ and buildx 0.17+.
 # ==============================================================================
 
 x-logging: &logging              # keeps the disk from filling with logs
@@ -81,8 +137,8 @@ x-java-env: &java-env
   SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL:-kafka:29092}
 
 # A shared config folder of the repo (e.g. ./Config with application.yml), mounted
-# read-only into every app container. Default = an empty folder.
-x-config-volume: &config-volume ${APP_CONFIG_DIR:-./docker-template/empty}:${APP_CONFIG_MOUNT:-/config}:ro
+# read-only into every app container. Default = the DockerFile folder (harmless).
+x-config-volume: &config-volume ${APP_CONFIG_DIR:-./DockerFile}:${APP_CONFIG_MOUNT:-/config}:ro
 
 # `required: false` = skip the wait when that profile is switched off
 # (database on RDS / no Kafka).
@@ -111,8 +167,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       # *.sql / *.sh in this folder run ONCE, on an empty volume, in name order.
-      # Default = an empty folder (the app migrates itself: Liquibase/Flyway/...).
-      - ${DB_INIT_DIR:-./docker-template/empty}:/docker-entrypoint-initdb.d:ro
+      # Default = the DockerFile folder, which holds no .sql/.sh (the app migrates itself).
+      - ${DB_INIT_DIR:-./DockerFile}:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -137,7 +193,7 @@ services:
       DATABASE_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT:-5432}/${DB_NAME}"
       SEED_COMMAND: ${DB_SEED_COMMAND:-for f in $$(ls *.sql | sort); do echo "== $$f"; psql -v ON_ERROR_STOP=1 -q -f "$$f" || exit 1; done}
     volumes:
-      - ${DB_SEED_DIR:-./docker-template/empty}:/seed-src:ro
+      - ${DB_SEED_DIR:-./DockerFile}:/seed-src:ro
     depends_on: *wait-db
     entrypoint:
       - bash
@@ -229,27 +285,6 @@ services:
     ports:
       - "127.0.0.1:${MAIL_UI_PORT:-8025}:8025"
 
-  # Stand-in for the Fauxnance market-data API: same paths and shapes, made-up
-  # prices, any key accepted. For testing trades without a real key or quota.
-  # Point the app at it:  FAUXNANCE_BASE_URL=http://market-mock:8089/v1
-  market-mock:
-    profiles: [mock-market]
-    image: node:20-alpine
-    <<: *restart
-    command: ["node", "/mock/fauxnance-mock.js"]
-    environment:
-      PORT: 8089
-      MOCK_MARKET_STATE: ${MOCK_MARKET_STATE:-open}
-    volumes:
-      - ./docker-template/mock:/mock:ro
-    ports:
-      - "127.0.0.1:${MOCK_MARKET_HOST_PORT:-8089}:8089"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8089/v1/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-
   # Topic/message browser. Has no login: published on the box only by default.
   kafka-ui:
     profiles: [kafka-ui]
@@ -263,111 +298,111 @@ services:
     depends_on:
       - kafka
 
-  # =============================================================== NODE API
-  # <<CHANGE>> second Node service: copy this block, rename the service and
-  #            every NODE_API_ prefix (e.g. NODE2_), add the keys to .env.
-  node-api:
-    profiles: [node-api]
+  # ============================================================ AUTH SERVICE
+  # <<CHANGE>> a second Node service: copy this block, rename the service and
+  #            every AUTH_SERVICE_ prefix, add the keys to .env.
+  auth-service:
+    profiles: [auth-service]
     build:
-      context: ${NODE_API_DIR:-./services/node-api}
-      dockerfile: ${NODE_API_DOCKERFILE:-Dockerfile}
+      context: ${AUTH_SERVICE_DIR:-./services/auth-service}
+      dockerfile: ${AUTH_SERVICE_DOCKERFILE:-Dockerfile}
       additional_contexts:
-        extra: ${NODE_API_EXTRA_DIR:-./docker-template/empty}
+        extra: ${AUTH_SERVICE_EXTRA_DIR:-./DockerFile}
       args:
-        NODE_VERSION: ${NODE_API_NODE_VERSION:-20}
-        NEEDS_BUILD: ${NODE_API_NEEDS_BUILD:-true}
-        BUILD_SCRIPT: ${NODE_API_BUILD_SCRIPT:-build}
-        START_CMD: ${NODE_API_START_CMD:-auto}
-        APP_PORT: ${NODE_API_PORT:-3000}
-        WRITABLE_DIRS: ${NODE_API_WRITABLE_DIRS:-}
-        NATIVE_BUILD_DEPS: ${NODE_API_NATIVE_DEPS:-false}
-        EXTRA_DEST: ${NODE_API_EXTRA_DEST:-}
+        NODE_VERSION: ${AUTH_SERVICE_NODE_VERSION:-20}
+        NEEDS_BUILD: ${AUTH_SERVICE_NEEDS_BUILD:-true}
+        BUILD_SCRIPT: ${AUTH_SERVICE_BUILD_SCRIPT:-build}
+        START_CMD: ${AUTH_SERVICE_START_CMD:-auto}
+        APP_PORT: ${AUTH_SERVICE_PORT:-3000}
+        WRITABLE_DIRS: ${AUTH_SERVICE_WRITABLE_DIRS:-}
+        NATIVE_BUILD_DEPS: ${AUTH_SERVICE_NATIVE_DEPS:-false}
+        EXTRA_DEST: ${AUTH_SERVICE_EXTRA_DEST:-}
     <<: *restart
     env_file: ${ENV_FILE:-.env}
     environment:
       <<: *common-env
-      PORT: ${NODE_API_PORT:-3000}
-      HC_PORT: ${NODE_API_PORT:-3000}
-      HC_PATH: ${NODE_API_HEALTH_PATH:-}
+      PORT: ${AUTH_SERVICE_PORT:-3000}
+      HC_PORT: ${AUTH_SERVICE_PORT:-3000}
+      HC_PATH: ${AUTH_SERVICE_HEALTH_PATH:-}
     volumes:
       - *config-volume
     ports:
-      - "${NODE_API_HOST_PORT:-${NODE_API_PORT:-3000}}:${NODE_API_PORT:-3000}"
+      - "${AUTH_SERVICE_HOST_PORT:-${AUTH_SERVICE_PORT:-3000}}:${AUTH_SERVICE_PORT:-3000}"
     depends_on: *wait-db          # <<CHANGE>> only if it must wait for another service
     healthcheck: *healthcheck
 
-  # =============================================================== JAVA API
+  # =========================================================== ORDER SERVICE
   # <<CHANGE>> second Java API: copy this block, rename the service and every
-  #            JAVA_API_ prefix, add the keys to .env.
-  java-api:
-    profiles: [java-api]
+  #            ORDER_SERVICE_ prefix, add the keys to .env.
+  order-service:
+    profiles: [order-service]
     build:
-      context: ${JAVA_API_DIR:-./services/java-api}
-      dockerfile: ${JAVA_API_DOCKERFILE:-Dockerfile}
+      context: ${ORDER_SERVICE_DIR:-./services/order-service}
+      dockerfile: ${ORDER_SERVICE_DOCKERFILE:-Dockerfile}
       additional_contexts:
-        extra: ${JAVA_API_EXTRA_DIR:-./docker-template/empty}
+        extra: ${ORDER_SERVICE_EXTRA_DIR:-./DockerFile}
       args:
-        JAVA_VERSION: ${JAVA_API_JAVA_VERSION:-21}
+        JAVA_VERSION: ${ORDER_SERVICE_JAVA_VERSION:-21}
         MAVEN_VERSION: ${MAVEN_VERSION:-3.9.9}
-        APP_PORT: ${JAVA_API_PORT:-8081}
-        APP_DIR: ${JAVA_API_APP_DIR:-.}
-        PRE_INSTALL_DIRS: ${JAVA_API_PRE_INSTALL_DIRS:-}
-        MODULE: ${JAVA_API_MODULE:-}
-        EXTRA_DEST: ${JAVA_API_EXTRA_DEST:-}
-        RUNTIME_IMAGE: ${JAVA_API_RUNTIME_IMAGE:-eclipse-temurin:${JAVA_API_JAVA_VERSION:-21}-jre-alpine}
-        RUNTIME_APK: ${JAVA_API_RUNTIME_APK:-}
+        APP_PORT: ${ORDER_SERVICE_PORT:-8081}
+        APP_DIR: ${ORDER_SERVICE_APP_DIR:-.}
+        PRE_INSTALL_DIRS: ${ORDER_SERVICE_PRE_INSTALL_DIRS:-}
+        MODULE: ${ORDER_SERVICE_MODULE:-}
+        EXTRA_DEST: ${ORDER_SERVICE_EXTRA_DEST:-}
+        RUNTIME_IMAGE: ${ORDER_SERVICE_RUNTIME_IMAGE:-eclipse-temurin:${ORDER_SERVICE_JAVA_VERSION:-21}-jre-alpine}
+        RUNTIME_APK: ${ORDER_SERVICE_RUNTIME_APK:-}
     <<: *restart
     env_file: ${ENV_FILE:-.env}
     environment:
       <<: *java-env
-      SERVER_PORT: ${JAVA_API_PORT:-8081}          # beats server.port in application.yml
-      PORT: ${JAVA_API_PORT:-8081}
-      HC_PORT: ${JAVA_API_PORT:-8081}
-      HC_PATH: ${JAVA_API_HEALTH_PATH:-}
+      SERVER_PORT: ${ORDER_SERVICE_PORT:-8081}          # beats server.port in application.yml
+      PORT: ${ORDER_SERVICE_PORT:-8081}
+      HC_PORT: ${ORDER_SERVICE_PORT:-8081}
+      HC_PATH: ${ORDER_SERVICE_HEALTH_PATH:-}
       JAVA_OPTS: "${JAVA_OPTS:--XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError}"
     volumes:
       - *config-volume
     ports:
-      - "${JAVA_API_HOST_PORT:-${JAVA_API_PORT:-8081}}:${JAVA_API_PORT:-8081}"
+      - "${ORDER_SERVICE_HOST_PORT:-${ORDER_SERVICE_PORT:-8081}}:${ORDER_SERVICE_PORT:-8081}"
     depends_on: *wait-db-kafka    # <<CHANGE>> only if it must wait for another service
     healthcheck: *healthcheck
 
-  # ============================================================ JAVA WORKER
+  # ======================================================== EXECUTOR SERVICE
   # Background service (Kafka consumer, scheduler ...). Not published to the host.
-  # <<CHANGE>> second worker: copy this block, rename JAVA_WORKER_.
-  java-worker:
-    profiles: [java-worker]
+  # <<CHANGE>> second worker: copy this block, rename EXECUTOR_SERVICE_.
+  executor-service:
+    profiles: [executor-service]
     build:
-      context: ${JAVA_WORKER_DIR:-./services/java-worker}
-      dockerfile: ${JAVA_WORKER_DOCKERFILE:-Dockerfile}
+      context: ${EXECUTOR_SERVICE_DIR:-./services/executor-service}
+      dockerfile: ${EXECUTOR_SERVICE_DOCKERFILE:-Dockerfile}
       additional_contexts:
-        extra: ${JAVA_WORKER_EXTRA_DIR:-./docker-template/empty}
+        extra: ${EXECUTOR_SERVICE_EXTRA_DIR:-./DockerFile}
       args:
-        JAVA_VERSION: ${JAVA_WORKER_JAVA_VERSION:-21}
+        JAVA_VERSION: ${EXECUTOR_SERVICE_JAVA_VERSION:-21}
         MAVEN_VERSION: ${MAVEN_VERSION:-3.9.9}
-        APP_PORT: ${JAVA_WORKER_PORT:-8082}
-        APP_DIR: ${JAVA_WORKER_APP_DIR:-.}
-        PRE_INSTALL_DIRS: ${JAVA_WORKER_PRE_INSTALL_DIRS:-}
-        MODULE: ${JAVA_WORKER_MODULE:-}
-        EXTRA_DEST: ${JAVA_WORKER_EXTRA_DEST:-}
-        RUNTIME_IMAGE: ${JAVA_WORKER_RUNTIME_IMAGE:-eclipse-temurin:${JAVA_WORKER_JAVA_VERSION:-21}-jre-alpine}
-        RUNTIME_APK: ${JAVA_WORKER_RUNTIME_APK:-}
+        APP_PORT: ${EXECUTOR_SERVICE_PORT:-8082}
+        APP_DIR: ${EXECUTOR_SERVICE_APP_DIR:-.}
+        PRE_INSTALL_DIRS: ${EXECUTOR_SERVICE_PRE_INSTALL_DIRS:-}
+        MODULE: ${EXECUTOR_SERVICE_MODULE:-}
+        EXTRA_DEST: ${EXECUTOR_SERVICE_EXTRA_DEST:-}
+        RUNTIME_IMAGE: ${EXECUTOR_SERVICE_RUNTIME_IMAGE:-eclipse-temurin:${EXECUTOR_SERVICE_JAVA_VERSION:-21}-jre-alpine}
+        RUNTIME_APK: ${EXECUTOR_SERVICE_RUNTIME_APK:-}
     <<: *restart
     env_file: ${ENV_FILE:-.env}
     environment:
       <<: *java-env
-      SERVER_PORT: ${JAVA_WORKER_PORT:-8082}
-      PORT: ${JAVA_WORKER_PORT:-8082}
-      HC_PORT: ${JAVA_WORKER_PORT:-8082}
-      HC_PATH: ${JAVA_WORKER_HEALTH_PATH:-}
+      SERVER_PORT: ${EXECUTOR_SERVICE_PORT:-8082}
+      PORT: ${EXECUTOR_SERVICE_PORT:-8082}
+      HC_PORT: ${EXECUTOR_SERVICE_PORT:-8082}
+      HC_PATH: ${EXECUTOR_SERVICE_HEALTH_PATH:-}
       JAVA_OPTS: "${JAVA_OPTS:--XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError}"
     volumes:
       - *config-volume
     depends_on:
       <<: *wait-db-kafka
       # Waits for the Java API to be healthy = the API has migrated the database.
-      # <<CHANGE>> remove the java-api line below if the worker does not depend on the API.
-      java-api: { condition: service_healthy, required: false }
+      # <<CHANGE>> remove the order-service line below if the worker does not depend on the API.
+      order-service: { condition: service_healthy, required: false }
     healthcheck: *healthcheck
 
   # ================================================================ FRONTEND
@@ -377,7 +412,7 @@ services:
       context: ${FRONTEND_DIR:-./frontend}
       dockerfile: ${FRONTEND_DOCKERFILE:-Dockerfile}
       additional_contexts:
-        extra: ${FRONTEND_EXTRA_DIR:-./docker-template/empty}
+        extra: ${FRONTEND_EXTRA_DIR:-./DockerFile}
       args:
         NODE_VERSION: ${FRONTEND_NODE_VERSION:-22}
         BUILD_SCRIPT: ${FRONTEND_BUILD_SCRIPT:-build}
@@ -389,25 +424,23 @@ services:
         EXTRA_DEST: ${FRONTEND_EXTRA_DEST:-}
     <<: *restart
     environment:
-      # Addresses baked into the page -> where they really are (README step 5).
+      # Addresses baked into the page -> where they really are (see the header of docker-compose.yml).
       URL_REWRITES: ${FRONTEND_URL_REWRITES:-}
       # What nginx forwards to the backends. `__unused__` = route switched off.
-      FRONTEND_PROXY_NODE_PREFIX: ${FRONTEND_PROXY_NODE_PREFIX:-_node}
-      FRONTEND_PROXY_NODE_TARGET: ${FRONTEND_PROXY_NODE_TARGET:-http://node-api:${NODE_API_PORT:-3000}}
-      FRONTEND_PROXY_JAVA_PREFIX: ${FRONTEND_PROXY_JAVA_PREFIX:-_java}
-      FRONTEND_PROXY_JAVA_TARGET: ${FRONTEND_PROXY_JAVA_TARGET:-http://java-api:${JAVA_API_PORT:-8081}}
+      FRONTEND_PROXY_AUTH_PREFIX: ${FRONTEND_PROXY_AUTH_PREFIX:-_auth}
+      FRONTEND_PROXY_AUTH_TARGET: ${FRONTEND_PROXY_AUTH_TARGET:-http://auth-service:${AUTH_SERVICE_PORT:-3000}}
+      FRONTEND_PROXY_ORDER_PREFIX: ${FRONTEND_PROXY_ORDER_PREFIX:-_order}
+      FRONTEND_PROXY_ORDER_TARGET: ${FRONTEND_PROXY_ORDER_TARGET:-http://order-service:${ORDER_SERVICE_PORT:-8081}}
       FRONTEND_PROXY_KEEP_PATHS: ${FRONTEND_PROXY_KEEP_PATHS:-__unused__}
-      FRONTEND_PROXY_KEEP_TARGET: ${FRONTEND_PROXY_KEEP_TARGET:-http://java-api:${JAVA_API_PORT:-8081}}
+      FRONTEND_PROXY_KEEP_TARGET: ${FRONTEND_PROXY_KEEP_TARGET:-http://order-service:${ORDER_SERVICE_PORT:-8081}}
       FRONTEND_PROXY_KEEP2_PATHS: ${FRONTEND_PROXY_KEEP2_PATHS:-__unused2__}
-      FRONTEND_PROXY_KEEP2_TARGET: ${FRONTEND_PROXY_KEEP2_TARGET:-http://node-api:${NODE_API_PORT:-3000}}
+      FRONTEND_PROXY_KEEP2_TARGET: ${FRONTEND_PROXY_KEEP2_TARGET:-http://auth-service:${AUTH_SERVICE_PORT:-3000}}
       NGINX_ENVSUBST_FILTER: "^FRONTEND_PROXY_"
-    volumes:
-      - ${FRONTEND_NGINX_TEMPLATE:-./docker-template/nginx/default.conf.template}:/etc/nginx/templates/default.conf.template:ro
     ports:
       - "${FRONTEND_PORT:-4200}:80"
     depends_on:
-      node-api: { condition: service_started, required: false }
-      java-api: { condition: service_started, required: false }
+      auth-service: { condition: service_started, required: false }
+      order-service: { condition: service_started, required: false }
 
 volumes:
   pgdata:

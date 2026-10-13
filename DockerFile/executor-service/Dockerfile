@@ -1,42 +1,41 @@
 # ==============================================================================
-# JAVA SERVICE TEMPLATE  -  Spring Boot (or any runnable jar), Maven or Gradle wrapper
+# EXECUTOR SERVICE  -  generic Dockerfile for Spring Boot (or any runnable jar), Maven or Gradle wrapper
 #
-# HOW TO USE:  copy this file into the service folder (the one with pom.xml or
-#              gradlew) as `Dockerfile`, and dockerignore.sample as `.dockerignore`.
-#              Do NOT edit it. The same file serves every Java service.
+# HOW TO USE:  copy this file into your executor-service (the one with pom.xml or gradlew) folder as `Dockerfile`.
+#              Do NOT edit it; every setting comes from .env through docker-compose.yml.
 #
 # WHERE TO CHANGE:  nothing in this file. Every value below is a build arg that
-# docker-compose.yml fills from .env (JAVA_API_* / JAVA_WORKER_* keys):
+# docker-compose.yml fills from .env (EXECUTOR_SERVICE_* keys):
 #
-#   build arg         .env key (API shown)        meaning                               default
-#   JAVA_VERSION      JAVA_API_JAVA_VERSION       must match the project's java.version 21
+#   build arg         .env key                    meaning                               default
+#   JAVA_VERSION      EXECUTOR_SERVICE_JAVA_VERSION       must match the project's java.version 21
 #   MAVEN_VERSION     MAVEN_VERSION               Maven used to build                   3.9.9
-#   APP_PORT          JAVA_API_PORT               port the app listens on (SERVER_PORT) 8080
-#   RUNTIME_IMAGE     JAVA_API_RUNTIME_IMAGE      image the jar runs on                 temurin jre-alpine
-#   RUNTIME_APK       JAVA_API_RUNTIME_APK        extra packages at run time,           ""
+#   APP_PORT          EXECUTOR_SERVICE_PORT               port the app listens on (SERVER_PORT) 8080
+#   RUNTIME_IMAGE     EXECUTOR_SERVICE_RUNTIME_IMAGE      image the jar runs on                 temurin jre-alpine
+#   RUNTIME_APK       EXECUTOR_SERVICE_RUNTIME_APK        extra packages at run time,           ""
 #                                                 e.g. "python3" when the app starts a
 #                                                 Python subprocess
 #   --- only for the three special layouts below ---
-#   APP_DIR           JAVA_API_APP_DIR            folder of the app's pom, inside *_DIR "."
-#   PRE_INSTALL_DIRS  JAVA_API_PRE_INSTALL_DIRS   library folders to `mvn install` first ""
-#   MODULE            JAVA_API_MODULE             module of an aggregator pom to build  ""
-#   EXTRA_DEST        JAVA_API_EXTRA_DEST         where an outside folder is copied to  ""
+#   APP_DIR           EXECUTOR_SERVICE_APP_DIR            folder of the app's pom, inside *_DIR "."
+#   PRE_INSTALL_DIRS  EXECUTOR_SERVICE_PRE_INSTALL_DIRS   library folders to `mvn install` first ""
+#   MODULE            EXECUTOR_SERVICE_MODULE             module of an aggregator pom to build  ""
+#   EXTRA_DEST        EXECUTOR_SERVICE_EXTRA_DEST         where an outside folder is copied to  ""
 #
 # SPECIAL LAYOUT 1 - the service depends on a LIBRARY in a sibling folder
 #   (pom.xml has a <dependency> on e.g. domain-engine that lives in the repo):
-#       JAVA_API_DIR              = the folder that contains BOTH (e.g. ./Services)
-#       JAVA_API_PRE_INSTALL_DIRS = the library folder(s), space-separated, inside it
-#       JAVA_API_APP_DIR          = the service folder inside it (e.g. order-service)
-#   Put the Dockerfile in JAVA_API_DIR and name it with JAVA_API_DOCKERFILE.
+#       EXECUTOR_SERVICE_DIR              = the folder that contains BOTH (e.g. ./Services)
+#       EXECUTOR_SERVICE_PRE_INSTALL_DIRS = the library folder(s), space-separated, inside it
+#       EXECUTOR_SERVICE_APP_DIR          = the service folder inside it (e.g. executor-service)
+#   Put the Dockerfile in EXECUTOR_SERVICE_DIR and name it with EXECUTOR_SERVICE_DOCKERFILE.
 #
 # SPECIAL LAYOUT 2 - an AGGREGATOR pom lists the services as <modules>:
-#       JAVA_API_DIR    = the folder of the aggregator pom
-#       JAVA_API_MODULE = the module path as written in <module>
+#       EXECUTOR_SERVICE_DIR    = the folder of the aggregator pom
+#       EXECUTOR_SERVICE_MODULE = the module path as written in <module>
 #
 # SPECIAL LAYOUT 3 - pom.xml reads a folder OUTSIDE the service folder
 #   (e.g. <directory>../../databases/postgresql/liquibase</directory>):
-#       JAVA_API_EXTRA_DIR  = that folder, relative to the repo root
-#       JAVA_API_EXTRA_DEST = where the build expects it, counted from /app
+#       EXECUTOR_SERVICE_EXTRA_DIR  = that folder, relative to the repo root
+#       EXECUTOR_SERVICE_EXTRA_DEST = where the build expects it, counted from /app
 #                             (/app/../../databases/postgresql = /databases/postgresql)
 #
 # Run-time settings (DB, Kafka, JWT ...) are ENVIRONMENT VARIABLES, never baked in.

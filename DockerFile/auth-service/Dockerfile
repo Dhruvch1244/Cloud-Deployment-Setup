@@ -1,30 +1,30 @@
 # ==============================================================================
-# NODE SERVICE TEMPLATE  -  any npm project (NestJS, Express, plain TypeScript/JS)
+# AUTH SERVICE  -  generic Dockerfile for any npm project (NestJS, Express, plain TypeScript/JS)
 #
-# HOW TO USE:  copy this file into the service folder as `Dockerfile`
-#              (and dockerignore.sample as `.dockerignore`). Do NOT edit it.
+# HOW TO USE:  copy this file into your auth-service folder as `Dockerfile`.
+#              Do NOT edit it; every setting comes from .env through docker-compose.yml.
 #
 # WHERE TO CHANGE:  nothing in this file. Every value below is a build arg that
-# docker-compose.yml fills from .env (the NODE_API_* keys):
+# docker-compose.yml fills from .env (the AUTH_SERVICE_* keys):
 #
 #   build arg           .env key                 meaning                              default
-#   NODE_VERSION        NODE_API_NODE_VERSION    Node major version                   20
-#   NEEDS_BUILD         NODE_API_NEEDS_BUILD     true = run `npm run <BUILD_SCRIPT>`  true
-#   BUILD_SCRIPT        NODE_API_BUILD_SCRIPT    npm script that compiles             build
-#   START_CMD           NODE_API_START_CMD       command that starts the app          auto
-#   APP_PORT            NODE_API_PORT            port the app listens on              3000
-#   WRITABLE_DIRS       NODE_API_WRITABLE_DIRS   folders the app writes to at run time ""
-#   NATIVE_BUILD_DEPS   NODE_API_NATIVE_DEPS     true = install python3/make/g++      false
+#   NODE_VERSION        AUTH_SERVICE_NODE_VERSION    Node major version                   20
+#   NEEDS_BUILD         AUTH_SERVICE_NEEDS_BUILD     true = run `npm run <BUILD_SCRIPT>`  true
+#   BUILD_SCRIPT        AUTH_SERVICE_BUILD_SCRIPT    npm script that compiles             build
+#   START_CMD           AUTH_SERVICE_START_CMD       command that starts the app          auto
+#   APP_PORT            AUTH_SERVICE_PORT            port the app listens on              3000
+#   WRITABLE_DIRS       AUTH_SERVICE_WRITABLE_DIRS   folders the app writes to at run time ""
+#   NATIVE_BUILD_DEPS   AUTH_SERVICE_NATIVE_DEPS     true = install python3/make/g++      false
 #                                                (also added automatically when the
 #                                                install fails without them)
-#   EXTRA_DEST          NODE_API_EXTRA_DEST      see "FILES OUTSIDE THE SERVICE FOLDER" ""
+#   EXTRA_DEST          AUTH_SERVICE_EXTRA_DEST      see "FILES OUTSIDE THE SERVICE FOLDER" ""
 #
 # START_CMD=auto runs the first of dist/main.js, dist/src/main.js, dist/index.js,
 # dist/src/index.js, dist/server.js that exists, else `npm start`.
 #
 # FILES OUTSIDE THE SERVICE FOLDER (needed at BUILD time, e.g. a shared contract):
-#   NODE_API_EXTRA_DIR  = that folder, relative to the repo root
-#   NODE_API_EXTRA_DEST = where the build expects it, counted from /app
+#   AUTH_SERVICE_EXTRA_DIR  = that folder, relative to the repo root
+#   AUTH_SERVICE_EXTRA_DEST = where the build expects it, counted from /app
 # Files needed only at RUN time (a shared config file) use APP_CONFIG_DIR instead.
 #
 # Run-time settings (DB, JWT, CORS ...) are ENVIRONMENT VARIABLES, never baked in.
@@ -34,7 +34,7 @@
 ARG NODE_VERSION=20
 
 # Empty stand-in so a plain `docker build` works; docker-compose replaces it with
-# the folder named by NODE_API_EXTRA_DIR (additional_contexts: extra).
+# the folder named by AUTH_SERVICE_EXTRA_DIR (additional_contexts: extra).
 FROM scratch AS extra
 
 # ---------- Stage 1: install, build, drop dev dependencies --------------------

@@ -1,8 +1,8 @@
 # ==============================================================================
-# FRONTEND TEMPLATE  -  Angular / React / Vue (any npm-built single-page app) on nginx
+# FRONTEND  -  generic Dockerfile for Angular / React / Vue (any npm-built single-page app) on nginx
 #
-# HOW TO USE:  copy this file into the frontend folder as `Dockerfile`
-#              (and dockerignore.sample as `.dockerignore`). Do NOT edit it.
+# HOW TO USE:  copy this file into your frontend folder as `Dockerfile`.
+#              Do NOT edit it; every setting comes from .env through docker-compose.yml.
 #
 # WHERE TO CHANGE:  nothing in this file. Every value below comes from .env
 # (the FRONTEND_* keys) through docker-compose.yml:
@@ -29,7 +29,7 @@
 #                                         starts. This is how a page built with
 #                                         http://localhost:3000 baked in is pointed
 #                                         at the real address WITHOUT a code change
-#                                         or a rebuild (README step 5).
+#                                         or a rebuild (see the header of docker-compose.yml).
 #
 # Server-side rendering is not run: an Angular SSR project is served as a plain
 # client-side app (index.csr.html). Needs BuildKit.
@@ -98,20 +98,87 @@ FROM nginx:1.27-alpine AS runtime
 # every start and then applies URL_REWRITES, so restarts are safe.
 COPY --from=build /site /opt/site-pristine
 
-# Static-only default. docker-compose mounts nginx/default.conf.template over it to
-# add the API proxy.
-COPY <<'NGINX' /etc/nginx/conf.d/default.conf
+# nginx config. The nginx image fills the ${FRONTEND_PROXY_*} names from the
+# environment each time the container starts (docker-compose sets them from .env).
+ENV FRONTEND_PROXY_AUTH_PREFIX=_auth FRONTEND_PROXY_AUTH_TARGET=http://auth-service:3000 \
+    FRONTEND_PROXY_ORDER_PREFIX=_order FRONTEND_PROXY_ORDER_TARGET=http://order-service:8081 \
+    FRONTEND_PROXY_KEEP_PATHS=__unused__ FRONTEND_PROXY_KEEP_TARGET=http://order-service:8081 \
+    FRONTEND_PROXY_KEEP2_PATHS=__unused2__ FRONTEND_PROXY_KEEP2_TARGET=http://auth-service:3000 \
+    NGINX_ENVSUBST_FILTER=^FRONTEND_PROXY_
+COPY <<'NGINX' /etc/nginx/templates/default.conf.template
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      '';
+}
+
 server {
   listen 80;
   server_name _;
   root /usr/share/nginx/html;
   index index.html;
+
+  # Docker's DNS, re-resolved so a restarted backend is picked up.
+  resolver 127.0.0.11 valid=10s;
+
   gzip on;
   gzip_min_length 1024;
   gzip_types text/css application/javascript application/json image/svg+xml;
-  location / { try_files $uri $uri/ /index.html; }
-  location ~* \.(?:js|mjs|css|html|json|webmanifest)$ { add_header Cache-Control "no-cache"; try_files $uri =404; }
-  location ~* \.(?:png|jpe?g|gif|svg|ico|webp|woff2?|ttf)$ { add_header Cache-Control "public, max-age=2592000"; try_files $uri =404; }
+  client_max_body_size 20m;
+
+  proxy_http_version 1.1;
+  proxy_set_header Host $http_host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  # WebSocket and server-sent events (live price streams)
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection $connection_upgrade;
+  proxy_buffering off;
+  proxy_read_timeout 3600s;
+
+  # Route 1 - prefix removed:  /<prefix>/x  ->  Node API  /x
+  location ~ ^/(${FRONTEND_PROXY_AUTH_PREFIX})/ {
+    set $auth_upstream ${FRONTEND_PROXY_AUTH_TARGET};
+    rewrite ^/(${FRONTEND_PROXY_AUTH_PREFIX})/(.*)$ /$2 break;
+    proxy_pass $auth_upstream;
+    # A cookie the backend scopes to /foo must reach the browser as /<prefix>/foo.
+    proxy_cookie_path ~^/(.+)$ /${FRONTEND_PROXY_AUTH_PREFIX}/$1;
+  }
+
+  # Route 2 - prefix removed:  /<prefix>/x  ->  Java API  /x
+  location ~ ^/(${FRONTEND_PROXY_ORDER_PREFIX})/ {
+    set $order_upstream ${FRONTEND_PROXY_ORDER_TARGET};
+    rewrite ^/(${FRONTEND_PROXY_ORDER_PREFIX})/(.*)$ /$2 break;
+    proxy_pass $order_upstream;
+    proxy_cookie_path ~^/(.+)$ /${FRONTEND_PROXY_ORDER_PREFIX}/$1;
+  }
+
+  # Route 3 - path passed through unchanged:  /api/x  ->  Java API /api/x
+  location ~ ^/(${FRONTEND_PROXY_KEEP_PATHS})(/|$) {
+    set $keep_upstream ${FRONTEND_PROXY_KEEP_TARGET};
+    proxy_pass $keep_upstream;
+  }
+
+  # Route 4 - path passed through unchanged, to the Node API
+  location ~ ^/(${FRONTEND_PROXY_KEEP2_PATHS})(/|$) {
+    set $keep2_upstream ${FRONTEND_PROXY_KEEP2_TARGET};
+    proxy_pass $keep2_upstream;
+  }
+
+  # Single-page app: unknown paths get index.html and the app routes them.
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  location ~* \.(?:js|mjs|css|html|json|webmanifest)$ {
+    add_header Cache-Control "no-cache";
+    try_files $uri =404;
+  }
+
+  location ~* \.(?:png|jpe?g|gif|svg|ico|webp|woff2?|ttf)$ {
+    add_header Cache-Control "public, max-age=2592000";
+    try_files $uri =404;
+  }
 }
 NGINX
 
