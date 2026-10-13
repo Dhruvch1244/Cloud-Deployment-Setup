@@ -62,14 +62,43 @@
 #    replaced at start (right); /_auth goes to auth-service, /_order to
 #    order-service, through the frontend port. Only that port has to be open.
 #
-# 4. Start and look:
+# 4. FIRST build each image on its own, so a problem shows up in one service at
+#    a time. Run from your repository root; <...> = your folder names:
 #
-#      docker compose up --build -d            build everything and start
+#      docker build -t auth-service:latest      <your-auth-service-folder>
+#      docker build -t order-service:latest     <your-order-service-folder>
+#      docker build -t executor-service:latest  <your-executor-service-folder>
+#      docker build -t frontend:latest          <your-frontend-folder>
+#
+#      docker images | grep -E "frontend|auth-service|order-service|executor-service"
+#
+#    Not the defaults (Node 20 / Java 21 / frontend Node 22)? Add e.g.
+#      --build-arg NODE_VERSION=22      --build-arg JAVA_VERSION=17
+#    The list of build args is at the top of each Dockerfile. All four must
+#    build before you go on.
+#
+# 5. THEN start everything with Compose. It uses the same image names, so the
+#    images you just built are the ones that run:
+#
+#      docker compose up -d                    start (uses the images built in step 4)
 #      docker compose ps                       what runs, and is it healthy
 #      docker compose logs -f order-service    follow one service
 #      docker compose up -d order-service      apply a change in .env
-#      docker compose up -d --build frontend   rebuild one service
+#      docker compose up -d --build frontend   rebuild one service after a code change
 #      docker compose down                     stop (add -v to DELETE bundled DB/Kafka data)
+#
+# 6. CLEAN RUN, once everything works: stop, delete the images, build fresh.
+#    Use this before every real run so no old image is reused:
+#
+#      docker compose down
+#      docker image prune -af
+#      docker compose up --build -d
+#
+#    `docker image prune -af` deletes EVERY image on the machine that no running
+#    container uses - also other projects' images and the Postgres/Kafka images,
+#    which are then downloaded again. It cannot be a step inside this file:
+#    Compose builds the images before it starts any container, so a prune
+#    started by Compose would delete the images it has just built.
 #
 # IMAGE NAMES are standard: frontend, auth-service, order-service,
 # executor-service (tag `latest`; set IMAGE_TAG in .env for another tag).
