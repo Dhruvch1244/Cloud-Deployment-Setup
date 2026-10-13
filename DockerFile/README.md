@@ -20,20 +20,65 @@ Run every command from the root of **your** repository, on a branch.
 ## The commands in short
 
 ```bash
-# build each image on its own
-docker build -t auth-service:latest      <your-auth-service-folder>
-docker build -t order-service:latest     <your-order-service-folder>
-docker build -t executor-service:latest  <your-executor-service-folder>
-docker build -t frontend:latest          <your-frontend-folder>
+# build each image: go INTO the service folder, then build with a dot at the end
+cd <your-auth-service-folder>      && docker build -t auth-service:latest .      
+cd <your-order-service-folder>     && docker build -t order-service:latest .     
+cd <your-executor-service-folder>  && docker build -t executor-service:latest .  
+cd <your-frontend-folder>          && docker build -t frontend:latest .          
 
-# start everything in the background
-docker compose up -d
-
-# clean run: prune images, build the four images, docker compose up -d
+# run everything: prune old images, build, and start in the background
 ./DockerFile/run.sh
 ```
 
 The steps below explain each of them.
+
+## 0. Before anything: Docker and Docker Compose on the Ubuntu VM
+
+`docker compose` must be available on the VM before any command here works.
+Check first:
+
+```bash
+docker --version
+docker compose version      # must print a version, 2.24 or newer
+docker buildx version       # 0.17 or newer
+```
+
+If any of them says "command not found" or "is not a docker command", install
+Docker with its Compose and buildx plugins (Ubuntu, official Docker packages):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Let your user run Docker without `sudo`, then log out and in again (or run
+`newgrp docker`):
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Check again; all three commands above must print a version, and this must work
+without `sudo`:
+
+```bash
+docker run --rm hello-world
+```
+
+Notes:
+
+- Without buildx, `docker build` falls back to the old builder and stops with
+  `the --mount option requires BuildKit`. `docker buildx version` must work.
+- The command is `docker compose` (with a space). The old `docker-compose`
+  (with a hyphen) is a different, outdated tool and is not used here.
+- If the VM already has Docker from Ubuntu's own `docker.io` package and
+  `docker compose version` fails, the install above adds the missing plugins.
 
 ## 1. Rename your existing Docker files
 
@@ -71,84 +116,67 @@ key).
 
 ## 4. Build each image on its own first
 
-One service at a time, so a problem shows up in one place:
+One service at a time, so a problem shows up in one place. For each service:
+**`cd` into its folder** (the one that now holds the `Dockerfile`), then run
+`docker build -t <image> .` The dot at the end means "build from this folder".
 
 ```bash
-docker build -t auth-service:latest      <your-auth-service-folder>
-docker build -t order-service:latest     <your-order-service-folder>
-docker build -t executor-service:latest  <your-executor-service-folder>
-docker build -t frontend:latest          <your-frontend-folder>
+cd <your-auth-service-folder>
+docker build -t auth-service:latest .
+cd -
 
+cd <your-order-service-folder>
+docker build -t order-service:latest .
+cd -
+
+cd <your-executor-service-folder>
+docker build -t executor-service:latest .
+cd -
+
+cd <your-frontend-folder>
+docker build -t frontend:latest .
+cd -
+```
+
+`cd -` takes you back to the repository root. Check the four images:
+
+```bash
 docker images | grep -E "frontend|auth-service|order-service|executor-service"
 ```
 
-Defaults: Node 20 for the auth service, Java 21, Node 22 for the frontend. The
-build args are listed at the top of each Dockerfile.
+Use exactly these image names: `auth-service`, `order-service`,
+`executor-service`, `frontend`.
 
-With other versions or ports, pass them as build args:
+Defaults are Node 20 for the auth service, Java 21, and Node 22 for the
+frontend. For other versions add a build arg before the dot, for example
+`docker build -t order-service:latest --build-arg JAVA_VERSION=17 .`
+The build args are listed at the top of each Dockerfile.
 
-```bash
-docker build -t auth-service:latest      --build-arg NODE_VERSION=22 --build-arg APP_PORT=3000  <your-auth-service-folder>
-docker build -t order-service:latest     --build-arg JAVA_VERSION=17 --build-arg APP_PORT=8081  <your-order-service-folder>
-docker build -t executor-service:latest  --build-arg JAVA_VERSION=17 --build-arg APP_PORT=8082  <your-executor-service-folder>
-docker build -t frontend:latest          --build-arg NODE_VERSION=22                            <your-frontend-folder>
-```
-
-A plain `docker build` knows nothing about your `.env`. If your project needs a
-setting from it to build (a frontend build script that reads env values or a
+A plain `docker build` does not read your `.env`. If a build fails because it
+needs a setting from it (a frontend build script that reads env values or a
 folder outside the frontend, a Java service that depends on a library folder),
-build that image through Compose, which passes the settings and gives the image
-the same name:
-
-```bash
-docker compose build auth-service
-docker compose build order-service
-docker compose build executor-service
-docker compose build frontend
-```
+build that image from the repository root through Compose, which passes the
+settings and gives the image the same name: `docker compose build frontend`.
 
 All four must build before you go on.
 
-## 5. Start everything with Compose
+## 5. Run everything
 
-Compose uses the same image names, so the images from step 4 are the ones that run.
-
-```bash
-docker compose up -d
-docker compose ps
-```
-
-| Task | Command |
-|---|---|
-| Follow one service | `docker compose logs -f order-service` |
-| Apply a change in `.env` | `docker compose up -d order-service` |
-| Rebuild one service after a code change | `docker compose up -d --build frontend` |
-| Stop, keep the data | `docker compose down` |
-| Stop and DELETE bundled database / Kafka data | `docker compose down -v` |
-
-## 6. Clean run, once everything works
-
-One command. It prunes first, builds the four images, and finishes with
-`docker compose up -d`:
+From the repository root, one command:
 
 ```bash
 ./DockerFile/run.sh
 ```
 
-What it runs, in order:
+It does three things in this order:
 
-```bash
-docker compose stop            # an image in use cannot be deleted
-docker image prune -af         # 1. PRUNE: delete all unused images
-docker compose build auth-service       # 2. BUILD: one image at a time
-docker compose build order-service
-docker compose build executor-service
-docker compose build frontend
-docker compose up -d           # 3. UP: always the last step
-```
+1. **Prune**: stops this project's containers and deletes all unused images
+   (`docker image prune -af`), so no old image is reused.
+2. **Build**: builds the four images one at a time and stops at the first failure.
+3. **Up**: `docker compose up -d`, always the last step.
 
-Use it before every real run so no old image is reused. `./DockerFile/run.sh -y`
-skips the question.
+You do not have to run `docker compose up` yourself: the script ends with it.
+`./DockerFile/run.sh -y` skips the question before the prune.
 
 `docker image prune -af` deletes **every** image on the machine that no running
 container uses, including other projects' images and the Postgres and Kafka
@@ -159,10 +187,23 @@ The prune is in the script and not inside `docker-compose.yml` because Compose
 builds the images before it starts any container: a prune started by Compose
 would delete the images it has just built.
 
+## 6. Look at it
+
+| Task | Command |
+|---|---|
+| What runs, and is it healthy | `docker compose ps` |
+| Follow one service | `docker compose logs -f order-service` |
+| Restart one service after changing `.env`, without a full clean run | `docker compose up -d order-service` |
+| Stop, keep the data | `docker compose down` |
+| Stop and DELETE bundled database / Kafka data | `docker compose down -v` |
+
 ## If something fails
 
 | What you see | Likely cause |
 |---|---|
+| `the --mount option requires BuildKit` or `DEPRECATED: The legacy builder is deprecated` during `docker build` | buildx is not installed on the VM. Do step 0; with Docker's own packages: `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`. Check with `docker buildx version` |
+| `docker: 'compose' is not a docker command` | The Compose plugin is not installed: step 0 |
+| `compose build requires buildx 0.17.0 or later` | buildx is too old: install Docker's own packages as in step 0 |
 | `required variable ... is missing a value` | That key is not in `.env` |
 | Build fails: folder or `package.json` / `pom.xml` not found | Wrong `*_DIR` in `.env`, often the letter case |
 | Container stays `unhealthy` but its log looks fine | Wrong `*_HEALTH_PATH`, or that URL needs a login; set it empty |
